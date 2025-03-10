@@ -1,0 +1,6 @@
+env
+backend/chroma
+backend/.env
+frontend/public/userInfo.json
+frontend/package-lock.json
+frontend/node_modules
