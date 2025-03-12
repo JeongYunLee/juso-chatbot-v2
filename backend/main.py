@@ -1,6 +1,8 @@
 import uuid, os
 from dotenv import load_dotenv
 from typing import TypedDict
+from typing import Annotated
+
 from openai import OpenAI
 from langchain_openai import ChatOpenAI
 import chromadb
@@ -22,8 +24,13 @@ from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.output_parsers.openai_tools import JsonOutputToolsParser
 from langchain_core.pydantic_v1 import BaseModel, Field
 from langchain_core.prompts import PromptTemplate
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig  
+
+from langchain_community.chat_message_histories import ChatMessageHistory, StreamlitChatMessageHistory
+from langchain_core.runnables.history import RunnableWithMessageHistory
+from langgraph.graph.message import add_messages
+from operator import itemgetter
 
 from langchain.agents import tool
 from langchain.agents import create_tool_calling_agent
@@ -41,19 +48,25 @@ load_dotenv(override=True)
 openai_api_key = os.getenv('OPENAI_API_KEY')
 logging.langsmith("rag_chatbot_test")
 
-# 메모리 저장소 생성
-memory = MemorySaver()
-
 llm_4o = ChatOpenAI(model="gpt-4o", temperature=0)
 
 class GraphState(TypedDict):
-    question: str  # 질문
+    question: str # 질문
     q_type: str  # 질문의 유형
     context: list | str  # 문서의 검색 결과
     answer: str | list[str]   # llm이 생성한 답변
     relevance: str  # 답변의 문서에 대한 관련성 (groundness check)
+    # chat_history: str  # 채팅 히스토리
     
-    
+store = {}
+
+# 세션 ID를 기반으로 세션 기록을 가져오는 함수
+def get_session_history(session_ids):
+    if session_ids not in store:  # 세션 ID가 store에 없는 경우
+        # 새로운 ChatMessageHistory 객체를 생성하여 store에 저장
+        store[session_ids] = ChatMessageHistory()
+    return store[session_ids]  # 해당 세션 ID에 대한 세션 기록 반환
+
 #######################################################################
 ############################ nodes: Router ############################
 #######################################################################
@@ -78,16 +91,25 @@ router_prompt = PromptTemplate(
             Questions related to addresses, such as concepts, definitions, address-related data analysis, or reviewing properly written addresses (e.g., “수지구는 자치구이니 일반구이니?”, “특별시에 대해서 설명해줘”, “주소와 주소정보의 차이점은?”).
 
             <Output format>: Always respond with either “general” or “domain_specific” and nothing else. {format_instructions}
+            <chat_history>: {chat_history}
             
             <Question>: {query} 
             """,
-    input_variables=["query"],
+    input_variables=["query", "chat_history"],
     partial_variables={"format_instructions": format_instructions},
 )
 
 def router(state: GraphState) -> GraphState:
     chain = router_prompt | llm_4o | router_output_parser
-    router_result = chain.invoke({"query": state["question"]})
+    
+    router_with_history  = RunnableWithMessageHistory(
+        chain,
+        get_session_history,  # 세션 기록을 가져오는 함수
+        input_messages_key="query",  # 사용자의 질문이 템플릿 변수에 들어갈 key
+        history_messages_key="chat_history",  # 기록 메시지의 키
+    )
+    
+    router_result = router_with_history.invoke({"query": state["question"]})
     state["q_type"] = router_result['type']
     return state
 
@@ -156,40 +178,8 @@ def verifier_conditional_edge(state: GraphState) -> str:
         raise ValueError(f"Unexpected verifier result: {verified_result}")
 
     return verified_result
-
-##########################################################################
-############################ nodes: LLM Model ############################
-##########################################################################
-
-# 자료구조 정의 (pydantic)
-class LLM_Model(BaseModel):
-    result: str = Field(description="answer the query based on the retrieved data")
-    reference: list = Field(description="reference that retrieved data is based on. If there is multiple references, list all of them.")
-
-# 출력 파서 정의
-model_output_parser = JsonOutputParser(pydantic_object=LLM_Model)
-format_instructions = model_output_parser.get_format_instructions()
-
-model_prompt = PromptTemplate(
-    template="""
-        You are an expert who answers the query based on the retrieved data.
-        <Question>: {query}
-        <Retrieved data>: {retrieved_data}
-
-        Your response must be in the following JSON format:
-        {format_instructions}
-    """,
-    input_variables=["query", "retrieved_data"],
-    partial_variables={"format_instructions": format_instructions},
-)
-
-def llm_model(state: GraphState) -> GraphState:
-    chain = model_prompt | llm_4o | model_output_parser
-    answer = chain.invoke({"query": state["question"], "retrieved_data": state["context"]})
-    state["answer"] = answer['result']
-    return state
-
-############################ tools ############################
+ 
+ ############################ tools ############################
 
 @tool
 def search_on_web(input):
@@ -267,7 +257,8 @@ agent_prompt = ChatPromptTemplate.from_messages(
             "system",
             """
             You are a helpful assistant, and you use Korean.
-            Make sure to use the appropriate tools for the task.
+            Make sure to use the appropriate tools for the task when `relevance` is `insufficient` or `unsuitable`.
+            If relevance is `sufficient`, you can directly provide the answer.
             1.	You can appropriately select and use various tools based on the situation.
                 (Note) When the user asks for current information, consider “February 2025” as the reference point for up-to-date data.
             2.	If the relevance is “insufficient,” use the retrieved_data along with the search_on_web tool.
@@ -299,31 +290,19 @@ def agent(state: GraphState) -> GraphState:
         return_intermediate_steps=True
     )
     
-    tool_input = {"input": state["question"], "retrieved_data": state["context"], "relevance": state["relevance"]}
+    # tool_input = {"input": state["question"], "retrieved_data": state["context"], "relevance": state["relevance"]}
 
-    result = agent_executor.invoke({"input": tool_input})
-    
-    final_result = result.copy()
 
-    # # image_generator가 포함되어 있다면 그대로 출력
-    # if any(step[0].tool == 'image_generator' for step in result['intermediate_steps']):
-    #     final_result['output'] = result['output']
-    # else:
-    #     # 가장 마지막에 실행된 advanced_assistant의 결과 찾기
-    #     for step in reversed(result['intermediate_steps']):
-    #         if step[0].tool == 'advanced_assistant':
-    #             final_result['output'] = step[1]
-    #             break
-    
-    # state["answer"] = final_result.get("output", "No valid output found")
-    
+    agent_with_history = RunnableWithMessageHistory(
+        agent_executor,
+        get_session_history,  # 세션 기록을 가져오는 함수
+        # input_messages_key="input",  # 사용자의 질문이 템플릿 변수에 들어갈 key
+        history_messages_key="chat_history",  # 기록 메시지의 키
+    )
+
+
+    result = agent_with_history.invoke({"input": state["question"], "retrieved_data": state["context"], "relevance": state["relevance"]})
     state['answer'] = result['output']
-
-
-    # if result["output"] == "Agent stopped due to max iterations.":
-    #     state["answer"] = result.get("intermediate_steps", [])
-    # else:
-    #     state["answer"] = result["output"]
 
     return state
 
@@ -331,44 +310,29 @@ def agent(state: GraphState) -> GraphState:
 ############################ Workflow Graph ############################
 ########################################################################
 
-
 workflow = StateGraph(GraphState)
 
 # 노드들을 정의합니다.
-workflow.add_node("router", router)  # 질문의 종류를 분류하는 노드를 추가합니다.
-workflow.add_node("retrieve", retrieve_document)  # 답변을 검색해오는 노드를 추가합니다.
-workflow.add_node("general_llm", agent)  # 일반 질문에 대한 답변을 생성하는 노드를 추가합니다.
-workflow.add_node("relevance_check", verifier)  # 답변의 문서에 대한 관련성 체크 노드를 추가합니다.
-workflow.add_node("llm_answer", llm_model)  # 답변을 생성하는 노드를 추가합니다.
+workflow.add_node("Router", router)  # 질문의 종류를 분류하는 노드를 추가합니다.
+workflow.add_node("Retrieved Data", retrieve_document)  # 답변을 검색해오는 노드를 추가합니다.
+workflow.add_node("Agent", agent)  # 일반 질문에 대한 답변을 생성하는 노드를 추가합니다.
+workflow.add_node("Verifier", verifier)  # 답변의 문서에 대한 관련성 체크 노드를 추가합니다.
+# workflow.add_node("llm_answer", llm_model)  # 답변을 생성하는 노드를 추가합니다.
 
 # 조건부 엣지를 추가합니다.
 workflow.add_conditional_edges(
-    "router",  # 질문의 종류를 분류하는 노드에서 나온 결과를 기반으로 다음 노드를 선택합니다.
+    "Router",  # 질문의 종류를 분류하는 노드에서 나온 결과를 기반으로 다음 노드를 선택합니다.
     router_conditional_edge,
-    {
-        "domain_specific": "retrieve",  #.
-        "general": "general_llm",  # 
-    },
+    {"domain_specific": "Retrieved Data",  "general": "Agent"},
 )
 
-workflow.add_edge("retrieve", "relevance_check")  # 검색 -> 답변
+workflow.add_edge("Retrieved Data", "Verifier")  # 검색 -> 답변
+workflow.add_edge("Verifier", "Agent")  # 답변 -> 답변
 
-# 조건부 엣지를 추가합니다.
-workflow.add_conditional_edges(
-    "relevance_check",  # 관련성 체크 노드에서 나온 결과를 is_relevant 함수에 전달합니다.
-    verifier_conditional_edge,
-    {
-        "sufficient": "llm_answer",  # 관련성이 있으면 종료합니다.
-        "insufficient": "general_llm",  # 답변하기에 부족하면 general_llm으로 이동합니다.
-        "unsuitable": "general_llm",  # 관련성이 없으면 general_llm으로 이동합니다.
-    },
-)
-
-workflow.add_edge("llm_answer", END)  # 답변 -> 종료
-workflow.add_edge("general_llm", END)  # 답변 -> 종료
+workflow.add_edge("Agent", END)  # 답변 -> 종료
 
 # 시작점을 설정합니다.
-workflow.set_entry_point("router")
+workflow.set_entry_point("Router")
 
 # 기록을 위한 메모리 저장소를 설정합니다.
 memory = MemorySaver()
@@ -404,14 +368,13 @@ def stream_responses():
             if not message:
                 return jsonify({"error": "Message is required"}), 400
     
-            config = RunnableConfig(recursion_limit=20, configurable={"thread_id": uuid.uuid4().hex})  
+            # config = RunnableConfig(recursion_limit=20, configurable={"session_id": "1", "thread_id": uuid.uuid4().hex})  
+            config = RunnableConfig(
+                recursion_limit=15, configurable={"thread_id": "HIKE-JUSOCHATBOT-DEMO", "user_id": current_user_id, "session_id": "session1"}  
+            )
 
             inputs = GraphState(
                 question=message,
-                q_type="",  # 초기값 제공
-                context=[],
-                answer="",
-                relevance=""
             )
 
             final_state = None  # 최종 상태를 저장할 변수
@@ -483,7 +446,7 @@ def reset_store():
         context='',
         answer='',
         relevance='',
-        chat_history=''
+        # chat_history=''
     )
     
     # current_user_id 초기화
