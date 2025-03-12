@@ -18,3 +18,4 @@ flask-restx==1.3.0
 Flask-Cors==4.0.1
 Flask-Session==0.8.0
 gunicorn==23.0.0
+langchain_teddynote==0.0.11
