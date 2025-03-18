@@ -21,4 +21,9 @@
 * framework: Nuxt, TailwindCSS
   
 **[Backend]**
-* framework: Flask API 
+* framework: Flask API
+
+**[Total Process]**
+
+<img width="561" alt="image" src="https://github.com/user-attachments/assets/174efa88-5d5e-4c5d-b8e6-ab362bc7b105" />
+
