@@ -26,6 +26,7 @@ from langchain_core.pydantic_v1 import BaseModel, Field
 from langchain_core.prompts import PromptTemplate
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig  
+from langchain_core.output_parsers import StrOutputParser
 
 from langchain_community.chat_message_histories import ChatMessageHistory, StreamlitChatMessageHistory
 from langchain_core.runnables.history import RunnableWithMessageHistory
@@ -189,39 +190,60 @@ def search_on_web(input):
 
     return search_result
 
+from langchain_community.utilities.dalle_image_generator import DallEAPIWrapper
+from langchain.tools import tool
+
+# DallE API Wrapper를 생성합니다.
+dalle = DallEAPIWrapper(model="dall-e-3", size="1024x1024", quality="standard", n=1)
+
+
+# DallE API Wrapper를 도구로 정의합니다.
 @tool
-def image_generator(input):
-    """ 이미지 생성기 """
-    client = OpenAI()
-    response = client.images.generate(
-        model="dall-e-3",
-        prompt=input,
-        size="1024x1024",
-        quality="standard",
-        n=1,
-    )
-    
-    image_url = response.data[0].url
-    return image_url
+def dalle_tool(query):
+    """use this tool to generate image from text"""
+    return dalle.run(query)
 
 @tool
 def advanced_assistant(input, retrieved_data):
-    """ 고급 기능(예: 긴 문서 생성, 추론이 필요한 답변 등)을 수행할 수 있는 모델 """
+    """ 고급 기능(예: 보고서 생성, 긴 문서 생성, 추론이 필요한 답변 등)을 수행하기 위한 모델 """
     client = OpenAI()
  
     response = client.chat.completions.create(
-        model="o1",
+        model="o3",
         messages=[
             { "role": "developer", "content": "You are a helpful assistant." },
             {
                 "role": "user", 
-                "content": input
+                "content": f"query: {input}\n\n retrieved data: {retrieved_data}"
             }
         ]
     )
     
     result = response.choices[0].message.content
     return result
+
+    # llm_4_1 = ChatOpenAI(model="gpt-4.1")
+
+    # model_prompt = PromptTemplate(
+    #     template="""
+    #         You are an expert who answers the query based on the retrieved data.
+    #         When relevance is `sufficient`, you MUST INCLUDE the sources from the retrieved_data.
+    #         Follow these rules for citing sources:
+    #             1.	Only include a source if it was actually used in your answer and relevance is sufficient.
+    #             2.	The citation must be based on context/metadata/source in the retrieved data(3 context would be provided). DO NOT MAKE YOURSELF!
+    #             3.	Citation format:
+    #             •	If context/metadata/source is: data/final/[1018] 주소정보_업무편람_최종(하이퍼링크).docx
+    #             •	Then citation should be: 출처: 주소정보 업무편람 최종
+    #             •	Extract only the essential name (remove path, numbering, and file extensions/parentheses).
+    #         DON'T FORGET TO INCLUDE THE REFERENCE INFO AT THE BOTTOM OF THE ANSWER!
+    #         <Question>: {query}
+    #         <Retrieved data>: {retrieved_data}
+    #     """,
+    #     input_variables=["query", "retrieved_data", "chat_history"],
+    # )
+
+    # chain = model_prompt | llm_4_1 | StrOutputParser()
+    # return chain.invoke({"query": input, "retrieved_data": retrieved_data})
 
 @tool
 def image_explainer(query, image_url):
@@ -249,36 +271,53 @@ def image_explainer(query, image_url):
     return response.choices[0]
     
 
-tools = [search_on_web, image_generator, advanced_assistant, image_explainer]
+tools = [search_on_web, dalle_tool, advanced_assistant, image_explainer]
 
 agent_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            """
-            You are a helpful assistant, and you use Korean.
-            Make sure to use the appropriate tools for the task when `relevance` is `insufficient` or `unsuitable`.
-            If relevance is `sufficient`, you can directly provide the answer.
-            1.	You can appropriately select and use various tools based on the situation.
-                (Note) When the user asks for current information, consider “February 2025” as the reference point for up-to-date data.
-            2.	If the relevance is “insufficient,” use the retrieved_data along with the search_on_web tool.
-            3.	If you use the advanced_assistant tool, make sure to reflect both the content and the full extent of the response in your final answer.
-            4.	If you use the image_generator tool, you must also use the image_explainer tool to provide a description of the generated image.
-            5.	(IMPORTANT) The user may have multiple requests, and you must generate a response that addresses all of them.
-                - If multiple tools are required to fulfill different aspects of the user’s request, combine the results comprehensively into a single, final response.
-                - If an image is generated, you must include both the image URL and a detailed explanation of the image.
-                - Ensure that all tool outputs are fully incorporated into the final answer.
-            """
+            "You are a helpful assistant used Korean ONLY. "
+            "When `Relevance` is sufficient, you may provide the answer directly. "
+            "When `Relevance` is insufficient, you MUST use another tools like search_on_web or advanced_assistant. "
+            "If you use `Retrieved Data`, you must state Cites from the reference on the bottom of your answer. "
+            "If the information from pdf_search tool is insufficient, you can find further or recent information by using search tool. "
+            "If you use search tool, you can add href link. "
+            "You can use image generation tool to generate image from text. "
+            "You can use advanced_assistant to write long report or reasoning tasks."
+
+            # """
+            # When using `Retrieved Data` and the topic is address-related, follow these rules for citing sources:
+            #     1.	Only include a source if it was actually used in your answer and relevance is sufficient.
+            #     2.	The citation must be based on context/metadata/source in the retrieved data. Among the three provided context sources, cite only those directly used in your answer.
+            #     3.	Citation format:
+            #     •	If context/metadata/source is: data/final/********.docx
+            #     •	Then citation should be: 출처: **********
+            #     •	Extract only the essential name (remove path, numbering, and file extensions/parentheses).
+            #     (IMPORTANT) DO NOT MAKE UP SOURCES. Only use the sources provided in the retrieved_data.
+            # Additional rules:
+            # 1.	You can appropriately select and use various tools based on the situation.
+            #     (Note) When the user asks for current information, consider "June 2025" as the reference point for up-to-date data.
+            # 2.	If the relevance is "insufficient," use the retrieved_data along with the search_on_web tool.
+            # 3.	If you use the advanced_assistant tool, make sure to reflect both the content and the full extent of the response in your final answer.
+            # 4.	If you use the image_generator tool, you must also use the image_explainer tool to provide a description of the generated image.
+            # 5.	(IMPORTANT) The user may have multiple requests, and you must generate a response that addresses all of them.
+            #     - If multiple tools are required to fulfill different aspects of the user's request, combine the results comprehensively into a single, final response.
+            #     - If an image is generated, you must include both the image URL and a detailed explanation of the image.
+            #     - Ensure that all tool outputs are fully incorporated into the final answer.
+            # """
         ),
         ("placeholder", "{chat_history}"),
         ("human", "{input}"),
+        ("human", "{retrieved_data}"),
         ("placeholder", "{agent_scratchpad}"),
     ]
 )
 
 def agent(state: GraphState) -> GraphState:
     
-    agent = create_tool_calling_agent(llm_4o, tools, agent_prompt)
+    llm = ChatOpenAI(model="gpt-4.1")
+    agent = create_tool_calling_agent(llm, tools, agent_prompt)
     
     agent_executor = AgentExecutor(
         agent=agent,
@@ -344,101 +383,119 @@ graph = workflow.compile(checkpointer=memory)
 ################################################Chat Interface################################################
 ##############################################################################################################
 
-app = Flask(__name__)
-app.secret_key = os.getenv('FLASK_SECRET_KEY')
+# app = Flask(__name__)
+# app.secret_key = os.getenv('FLASK_SECRET_KEY')
 
-origins = ["http://hike.cau.ac.kr", "http://localhost:3000"]
-CORS(app, resources={r"/*": {"origins": origins}}, supports_credentials=True)
+from fastapi import FastAPI, Request, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
+app = FastAPI(title="Juso Chatbot API")
+
+from pydantic_settings import BaseSettings
+from functools import lru_cache
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+class Settings(BaseSettings):
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    ALLOWED_ORIGINS: list = [
+        "http://hike.cau.ac.kr",
+        "http://localhost:3000",
+        "http://localhost:3001"
+    ]
+
+@lru_cache()
+def get_settings():
+    return Settings() 
+
+settings = get_settings()
+
+# CORS 설정
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class MessageRequest(BaseModel):
+    message: str
+
+class FeedbackRequest(BaseModel):
+    score: float
+    run_id: str
 
 current_user_id = None
 
-@app.route('/set_user_id', methods=['POST', 'GET'])
-def set_user_id():
+@app.post("/set_user_id")
+async def set_user_id(request: Request):
     global current_user_id
-    data = request.get_json()
+    data = await request.json()
     current_user_id = data.get('id')
-    return jsonify({"status": "ID received successfully"})
+    return {"status": "ID received successfully"}
 
-@app.route('/', methods=['POST', 'GET'])
-def stream_responses():
-    if request.method == 'POST':
-        with collect_runs() as cb:
-            message = request.form.get('message')
-            
-            if not message:
-                return jsonify({"error": "Message is required"}), 400
-    
-            # config = RunnableConfig(recursion_limit=20, configurable={"session_id": "1", "thread_id": uuid.uuid4().hex})  
-            config = RunnableConfig(
-                recursion_limit=15, configurable={"thread_id": "HIKE-JUSOCHATBOT-DEMO", "user_id": current_user_id, "session_id": "session1"}  
-            )
-
-            inputs = GraphState(
-                question=message,
-            )
-
-            final_state = None  # 최종 상태를 저장할 변수
-
-            try:
-                # for chunk in graph.stream(inputs, stream_mode="values", config=config):
-                #     for state_key, state_value in chunk.items():
-                #         if state_key == "messages":
-                #             if isinstance(state_value, list) and state_value:
-                #                 if hasattr(state_value[-1], "pretty_print"):
-                #                     state_value[-1].pretty_print()
-                #                 else:
-                #                     # print(state_value[-1])
-                #                     pass
-                
-                final_state = graph.invoke(inputs, stream_mode="values", config=config)
-                answer_text = final_state["answer"]
-                print(answer_text)
-                
-            except GraphRecursionError as e:
-                print(f"Recursion limit reached: {e}")
-                answer_text = "죄송합니다. 해당 질문에 대해서는 답변할 수 없습니다."
-            except Exception as e:
-                print(f"An error occurred: {e}")
-                answer_text = "죄송합니다. 처리 중 오류가 발생했습니다."
-
-            return jsonify(answer=answer_text)
-        
-
-langsmith_client = Client()
-
-@app.route('/feedback', methods=['POST', 'GET'])
-def handle_feedback():
-    data = request.json
-    print(f"Received data: {data}")
-    score = data.get('score')
-    run_id = data.get('run_id')  # Get run_id from JSON body
-
-    if score is None:
-        return jsonify({"message": "No feedback provided"}), 400
-
-    if run_id is None:
-        return jsonify({"message": "No run_id available"}), 400
-    
+@app.post("/")
+async def stream_responses(request: Request):
     try:
-        score_value = float(score)
+        data = await request.json()
+        message = data.get('message')
+        
+        if not message:
+            raise HTTPException(status_code=400, detail="Message is required")
+
+        config = RunnableConfig(
+            recursion_limit=15, 
+            configurable={
+                "thread_id": "HIKE-JUSOCHATBOT-DEMO", 
+                "user_id": current_user_id, 
+                "session_id": "session1"
+            }
+        )
+
+        inputs = GraphState(
+            question=message,
+        )
+
+        try:
+            final_state = graph.invoke(inputs, stream_mode="values", config=config)
+            answer_text = final_state["answer"]
+            print(answer_text)
+            return {"answer": answer_text}
+            
+        except GraphRecursionError as e:
+            print(f"Recursion limit reached: {e}")
+            return {"answer": "죄송합니다. 해당 질문에 대해서는 답변할 수 없습니다."}
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            return {"answer": "죄송합니다. 처리 중 오류가 발생했습니다."}
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/feedback")
+async def handle_feedback(feedback: FeedbackRequest):
+    try:
         langsmith_client.create_feedback(
-            run_id,
+            feedback.run_id,
             key="feedback-key",
-            score=score_value,
+            score=feedback.score,
             comment="comment",
         )
-        return jsonify({"message": "Feedback received"}), 200
+        return {"message": "Feedback received"}
     except Exception as e:
         print(f"An error occurred while handling feedback: {e}")
-        return jsonify({"message": "An error occurred"}), 500
+        raise HTTPException(status_code=500, detail="An error occurred while processing feedback")
 
-@app.route('/reset', methods=['POST', 'GET'])
-def reset_store():
+@app.post("/reset")
+async def reset_store():
     global store, current_user_id
-    # store를 빈 딕셔너리로 초기화
     store = {}
     
-    # 초기 상태로 `GraphState` 객체를 리셋 (임의로 예제 상태를 제공)
     global initial_state
     initial_state = GraphState(
         question='',
@@ -446,13 +503,14 @@ def reset_store():
         context='',
         answer='',
         relevance='',
-        # chat_history=''
     )
     
-    # current_user_id 초기화
-    # current_user_id = None
-    
-    return jsonify({"status": "Store and GraphState reset successfully"})
+    return {"status": "Store and GraphState reset successfully"}
 
-if __name__ == '__main__':
-    app.run('0.0.0.0', port=5000, debug=True)
+# if __name__ == '__main__':
+#     app.run('0.0.0.0', port=5000, debug=True)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main_chainlit:app", host="0.0.0.0", port=8000, reload=True)
