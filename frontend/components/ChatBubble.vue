@@ -8,7 +8,6 @@
         <!-- answer -->
         <div v-if="answer !== null" class="answer-container">
             <p class="answer-text" v-html="compiledMarkdown"></p>
-
             <!-- icon tooltips-->
             <div class="icon-container">
                 <span class="icon" :class="{ success: tooltips.copy === 'Copied!' }" :title="tooltips.copy"
@@ -25,7 +24,7 @@
                             </path>
                         </g>
                     </svg></span>
-                <span class="icon" :class="{ success: tooltips.thumbsup === 'Saved!' }" :title="tooltips.thumbsup"
+                <!-- <span class="icon" :class="{ success: tooltips.thumbsup === 'Saved!' }" :title="tooltips.thumbsup"
                     @click="sendFeedback(1)"><svg width="15px" height="15px" viewBox="0 -2.5 64 64" version="1.1"
                         xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
                         xmlns:sketch="http://www.bohemiancoding.com/sketch/ns" fill="#000000">
@@ -71,7 +70,8 @@
                                 </g>
                             </g>
                         </g>
-                    </svg></span>
+                    </svg>
+                </span> -->
             </div>
         </div>
 
@@ -107,6 +107,14 @@ const props = defineProps({
 
 const compiledMarkdown = computed(() => {
     return marked(props.answer, {
+        gfm: true,
+        breaks: true,
+        headerIds: true,
+        mangle: false,
+        sanitize: false,
+        smartLists: true,
+        smartypants: true,
+        xhtml: false,
         highlight: function (code, lang) {
             const languageClass = `language-${lang}`;
             if (Prism.languages[lang]) {
@@ -118,6 +126,12 @@ const compiledMarkdown = computed(() => {
     });
 });
 
+// 파일명 감지를 위한 computed 속성
+const savedFileName = computed(() => {
+    // "저장"과 ".txt"가 포함된 메시지에서 파일명 추출
+    const match = props.answer.match(/[^:]*\.txt/);
+    return match ? match[0].trim() : null;
+});
 
 const tooltips = ref({
     copy: 'Copy',
@@ -126,6 +140,7 @@ const tooltips = ref({
 });
 
 const copyToClipboard = () => {
+    // 원본 마크다운 텍스트 사용
     navigator.clipboard.writeText(props.answer).then(() => {
         tooltips.value.copy = 'Copied!';
 
@@ -174,6 +189,7 @@ const sendFeedback = async (score) => {
         console.error('Error sending feedback:', error);
     }
 };
+
 </script>
 
 <style scoped>

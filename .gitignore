@@ -4,3 +4,12 @@ backend/.env
 frontend/public/userInfo.json
 frontend/package-lock.json
 frontend/node_modules
+.chainlit/*
+.files/*
+backend/__pycache__
+backend/.chainlit/*
+backend/chainlit.md
+frontend/.DS_Store
+frontend/.nuxt/*
+.DS_Store
+chroma.zip
