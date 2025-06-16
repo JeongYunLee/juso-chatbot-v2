@@ -3,11 +3,11 @@
         <div class="w-full px-6 pt-4 pb-4 flex justify-between">
             <div class="flex items-center justify-between">
                 <button class="flex-none text-xl font-semibold" onclick="location.reload()">
-                    Chatbot (ver2.0)
+                    Address Chatbot
                 </button>
             </div>
 
-            <div class="dropdown flex-row items-center gap-5">
+            <!-- <div class="dropdown flex-row items-center gap-5">
                 <span
                     class="dropbtn flex items-center w-full text-gray-600 hover:text-gray-400 focus:outline-none focus:text-gray-400 font-mediums">
                     <svg width="50px" height="50px" viewBox="-1.92 -1.92 27.84 27.84" fill="none"
@@ -29,7 +29,7 @@
                 <div class="dropdown-content">
                     <button @click="handleLogout">Logout</button>
                 </div>
-            </div>
+            </div> -->
         </div>
     </header>
 </template>

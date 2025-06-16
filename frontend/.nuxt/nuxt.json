@@ -1,9 +1,9 @@
 {
-  "_hash": "fP9-Ah_w7PKAAKRD3nbFckjzepJQccu3J1LmJeM0CwE",
+  "_hash": "kVaUS2sLgj4V5uZTKMLekW5RNANNLeWKRQFmMW5BHJY",
   "project": {
-    "rootDir": "/Users/jeongyunl/Documents/GitHub/juso-chatbot-v2/frontend"
+    "rootDir": "/Users/cauhike/Documents/GitHub/juso-chatbot-v2/frontend"
   },
   "versions": {
-    "nuxt": "3.16.0"
+    "nuxt": "3.17.5"
   }
 }

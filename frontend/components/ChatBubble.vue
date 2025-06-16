@@ -126,13 +126,6 @@ const compiledMarkdown = computed(() => {
     });
 });
 
-// 파일명 감지를 위한 computed 속성
-const savedFileName = computed(() => {
-    // "저장"과 ".txt"가 포함된 메시지에서 파일명 추출
-    const match = props.answer.match(/[^:]*\.txt/);
-    return match ? match[0].trim() : null;
-});
-
 const tooltips = ref({
     copy: 'Copy',
     thumbsup: 'Helpful',
@@ -152,43 +145,43 @@ const copyToClipboard = () => {
     });
 };
 
-const isFeedbackSent = ref(false); // 상태 변수 추가
+// const isFeedbackSent = ref(false); // 상태 변수 추가
 
 // Function to send feedback to the server
-const sendFeedback = async (score) => {
-    if (isFeedbackSent.value) return; // 이미 피드백을 보냈으면 함수 종료
+// const sendFeedback = async (score) => {
+//     if (isFeedbackSent.value) return; // 이미 피드백을 보냈으면 함수 종료
 
-    try {
-        const response = await fetch(`${import.meta.env.VITE_API_URL}/feedback`, {
-            method: 'POST',
-            credentials: 'include',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                score,
-                run_id: props.run_id
-            }),
-        });
+//     try {
+//         const response = await fetch(`${import.meta.env.VITE_API_URL}/feedback`, {
+//             method: 'POST',
+//             credentials: 'include',
+//             headers: {
+//                 'Content-Type': 'application/json',
+//             },
+//             body: JSON.stringify({
+//                 score,
+//                 run_id: props.run_id
+//             }),
+//         });
 
-        if (!response.ok) {
-            throw new Error('Failed to send feedback');
-        }
+//         if (!response.ok) {
+//             throw new Error('Failed to send feedback');
+//         }
 
-        // Change tooltip text and color to 'Saved!'
-        tooltips.value[score === 1 ? 'thumbsup' : 'thumbsdown'] = 'Saved!';
-        isFeedbackSent.value = true; // 피드백이 전송되었음을 표시
+//         // Change tooltip text and color to 'Saved!'
+//         tooltips.value[score === 1 ? 'thumbsup' : 'thumbsdown'] = 'Saved!';
+//         isFeedbackSent.value = true; // 피드백이 전송되었음을 표시
 
-        // Revert tooltip text and color back after 2 seconds
-        setTimeout(() => {
-            tooltips.value[score === 1 ? 'thumbsup' : 'thumbsdown'] = score === 1 ? 'Helpful' : 'Not Helpful';
-        }, 2000);
+//         // Revert tooltip text and color back after 2 seconds
+//         setTimeout(() => {
+//             tooltips.value[score === 1 ? 'thumbsup' : 'thumbsdown'] = score === 1 ? 'Helpful' : 'Not Helpful';
+//         }, 2000);
 
-        console.log('Feedback sent successfully');
-    } catch (error) {
-        console.error('Error sending feedback:', error);
-    }
-};
+//         console.log('Feedback sent successfully');
+//     } catch (error) {
+//         console.error('Error sending feedback:', error);
+//     }
+// };
 
 </script>
 

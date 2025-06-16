@@ -37,17 +37,12 @@ from langchain.agents import tool
 from langchain.agents import create_tool_calling_agent
 from langchain.agents import AgentExecutor
 
-## Flask
-from flask import Flask, request, jsonify, g, session
-from flask_restx import Api, Resource
-from flask_cors import CORS
-
 from langchain_teddynote import logging
 
 # .env 파일 활성화 & API KEY 설정
 load_dotenv(override=True)
 openai_api_key = os.getenv('OPENAI_API_KEY')
-logging.langsmith("rag_chatbot_test")
+logging.langsmith("hike-jusochatbot-demo")
 
 llm_4o = ChatOpenAI(model="gpt-4o", temperature=0)
 
@@ -110,7 +105,7 @@ def router(state: GraphState) -> GraphState:
         history_messages_key="chat_history",  # 기록 메시지의 키
     )
     
-    router_result = router_with_history.invoke({"query": state["question"]})
+    router_result = router_with_history.invoke({"query": state["question"]}, {'configurable': {'session_id': 'tmp'}})
     state["q_type"] = router_result['type']
     return state
 
@@ -126,9 +121,24 @@ client = chromadb.PersistentClient('chroma/')
 embedding = OpenAIEmbeddings(model='text-embedding-3-large')  
 vectorstore = Chroma(client=client, collection_name="49_files_openai_3072", embedding_function=embedding)
 
+# def retrieve_document(state: GraphState) -> GraphState:
+#     retrieved_docs = vectorstore.similarity_search_with_score(state["question"], k=3)
+#     return {**state, "context": retrieved_docs} 
+
 def retrieve_document(state: GraphState) -> GraphState:
-    retrieved_docs = vectorstore.similarity_search_with_score(state["question"], k=3)
-    return {**state, "context": retrieved_docs} 
+    retrieved_docs_with_score = vectorstore.similarity_search_with_score(state["question"], k=3)
+
+    # Document를 딕셔너리로 변환
+    serialized_docs = [
+        {
+            "page_content": doc.page_content,
+            "metadata": doc.metadata,
+            "score": score
+        }
+        for doc, score in retrieved_docs_with_score
+    ]
+
+    return {**state, "context": serialized_docs}
 
 #########################################################################
 ############################ nodes: Verifier ############################
@@ -168,7 +178,7 @@ verifier_prompt = PromptTemplate(
 
 def verifier(state: GraphState) -> GraphState:
     chain = verifier_prompt | llm_4o | verifier_output_parser
-    verified = chain.invoke({"query": state["question"], "retrieved_data": state["context"]})
+    verified = chain.invoke({"query": state["question"], "retrieved_data": state["context"]}, {'configurable': {'session_id': 'tmp'}})
     state["relevance"] = verified['type']
     return state
 
@@ -186,7 +196,7 @@ def verifier_conditional_edge(state: GraphState) -> str:
 def search_on_web(input):
     """ 실시간 정보, 최신 정보 등 웹 검색이 필요한 질문에 답변하기 위해 사용하는 도구 """
     search_tool = TavilySearchResults(max_results=5)
-    search_result = search_tool.invoke({"query": input})
+    search_result = search_tool.invoke({"query": input}, {'configurable': {'session_id': 'tmp'}})
 
     return search_result
 
@@ -340,7 +350,7 @@ def agent(state: GraphState) -> GraphState:
     )
 
 
-    result = agent_with_history.invoke({"input": state["question"], "retrieved_data": state["context"], "relevance": state["relevance"]})
+    result = agent_with_history.invoke({"input": state["question"], "retrieved_data": state["context"], "relevance": state["relevance"]}, {'configurable': {'session_id': 'tmp'}})
     state['answer'] = result['output']
 
     return state
@@ -383,6 +393,146 @@ graph = workflow.compile(checkpointer=memory)
 ################################################Chat Interface################################################
 ##############################################################################################################
 
+# from fastapi import FastAPI, Request, Form, HTTPException
+# from fastapi.middleware.cors import CORSMiddleware
+# from fastapi.responses import JSONResponse
+# from pydantic import BaseModel
+
+# app = FastAPI(title="Juso Chatbot API")
+
+# from pydantic_settings import BaseSettings
+# from functools import lru_cache
+# import os
+# from dotenv import load_dotenv
+
+# load_dotenv()
+
+# class Settings(BaseSettings):
+#     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+#     ALLOWED_ORIGINS: list = [
+#         "http://localhost:3000",
+#         "http://localhost:3001",
+#         "https://localhost:3000",
+#         "https://localhost:3001",
+#         "http://labs.datahub.kr",
+#         "https://labs.datahub.kr",
+#         "http://localhost:8000",
+#         "https://localhost:8000",
+
+#     ]
+
+# @lru_cache()
+# def get_settings():
+#     return Settings() 
+
+# settings = get_settings()
+
+# # CORS 설정
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=settings.ALLOWED_ORIGINS,
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
+
+# class MessageRequest(BaseModel):
+#     message: str
+
+# class FeedbackRequest(BaseModel):
+#     score: float
+#     run_id: str
+
+# current_user_id = None
+
+# # @app.post("/set_user_id")
+# # async def set_user_id(request: Request):
+# #     global current_user_id
+# #     data = await request.json()
+# #     current_user_id = data.get('id')
+# #     return {"status": "ID received successfully"}
+
+# @app.post("/")
+# async def stream_responses(request: Request):
+#     try:
+#         data = await request.json()
+#         message = data.get('message')
+        
+#         if not message:
+#             raise HTTPException(status_code=400, detail="Message is required")
+
+#         config = RunnableConfig(
+#             recursion_limit=15, 
+#             configurable={
+#                 "thread_id": "HIKE-JUSOCHATBOT-DEMO", 
+#                 "user_id": current_user_id, 
+#                 "session_id": "session1"
+#             }
+#         )
+
+#         inputs = GraphState(
+#             question=message,
+#         )
+
+#         try:
+#             final_state = graph.invoke(inputs, stream_mode="values", config=config)
+#             answer_text = final_state["answer"]
+#             print(answer_text)
+#             return {"answer": answer_text}
+            
+#         except GraphRecursionError as e:
+#             print(f"Recursion limit reached: {e}")
+#             return {"answer": "죄송합니다. 해당 질문에 대해서는 답변할 수 없습니다."}
+#         except Exception as e:
+#             print(f"An error occurred: {e}")
+#             return {"answer": "죄송합니다. 처리 중 오류가 발생했습니다."}
+
+#     except Exception as e:
+#         raise HTTPException(status_code=400, detail=str(e))
+
+# # @app.post("/feedback")
+# # async def handle_feedback(feedback: FeedbackRequest):
+# #     try:
+# #         langsmith_client.create_feedback(
+# #             feedback.run_id,
+# #             key="feedback-key",
+# #             score=feedback.score,
+# #             comment="comment",
+# #         )
+# #         return {"message": "Feedback received"}
+# #     except Exception as e:
+# #         print(f"An error occurred while handling feedback: {e}")
+# #         raise HTTPException(status_code=500, detail="An error occurred while processing feedback")
+
+# @app.post("/reset")
+# async def reset_store():
+#     global store, current_user_id
+#     store = {}
+    
+#     global initial_state
+#     initial_state = GraphState(
+#         question='',
+#         q_type='',
+#         context='',
+#         answer='',
+#         relevance='',
+#     )
+    
+#     return {"status": "Store and GraphState reset successfully"}
+
+# # if __name__ == '__main__':
+# #     app.run('0.0.0.0', port=5000, debug=True)
+
+
+# if __name__ == "__main__":
+#     import uvicorn
+#     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
+
+##############################################################################################################
+################################################Chat Interface################################################
+##############################################################################################################
+
 # app = Flask(__name__)
 # app.secret_key = os.getenv('FLASK_SECRET_KEY')
 
@@ -403,9 +553,14 @@ load_dotenv()
 class Settings(BaseSettings):
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
     ALLOWED_ORIGINS: list = [
-        "http://hike.cau.ac.kr",
         "http://localhost:3000",
-        "http://localhost:3001"
+        "http://localhost:3001",
+        "https://localhost:3000",
+        "https://localhost:3001",
+        "http://labs.datahub.kr",
+        "https://labs.datahub.kr",
+        "http://localhost:8000",
+        "https://localhost:8000",
     ]
 
 @lru_cache()
@@ -432,14 +587,14 @@ class FeedbackRequest(BaseModel):
 
 current_user_id = None
 
-@app.post("/set_user_id")
-async def set_user_id(request: Request):
-    global current_user_id
-    data = await request.json()
-    current_user_id = data.get('id')
-    return {"status": "ID received successfully"}
+# @app.post("/set_user_id")
+# async def set_user_id(request: Request):
+#     global current_user_id
+#     data = await request.json()
+#     current_user_id = data.get('id')
+#     return {"status": "ID received successfully"}
 
-@app.post("/")
+@app.post("/api/")
 async def stream_responses(request: Request):
     try:
         data = await request.json()
@@ -477,21 +632,21 @@ async def stream_responses(request: Request):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.post("/feedback")
-async def handle_feedback(feedback: FeedbackRequest):
-    try:
-        langsmith_client.create_feedback(
-            feedback.run_id,
-            key="feedback-key",
-            score=feedback.score,
-            comment="comment",
-        )
-        return {"message": "Feedback received"}
-    except Exception as e:
-        print(f"An error occurred while handling feedback: {e}")
-        raise HTTPException(status_code=500, detail="An error occurred while processing feedback")
+# @app.post("/feedback")
+# async def handle_feedback(feedback: FeedbackRequest):
+#     try:
+#         langsmith_client.create_feedback(
+#             feedback.run_id,
+#             key="feedback-key",
+#             score=feedback.score,
+#             comment="comment",
+#         )
+#         return {"message": "Feedback received"}
+#     except Exception as e:
+#         print(f"An error occurred while handling feedback: {e}")
+#         raise HTTPException(status_code=500, detail="An error occurred while processing feedback")
 
-@app.post("/reset")
+@app.post("/api/reset")
 async def reset_store():
     global store, current_user_id
     store = {}
@@ -513,4 +668,4 @@ async def reset_store():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main_chainlit:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=5000, reload=True)

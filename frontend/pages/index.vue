@@ -32,6 +32,9 @@ const message = ref('');
 const isLoading = ref(false);  // 로딩 상태를 나타내는 플래그 변수
 const messagesContainer = ref(null);  // messages-container 요소에 대한 참조
 
+const config = useRuntimeConfig()
+const baseURL = config.public.apiUrl
+
 // 스크롤을 맨 아래로 이동시키는 함수
 const scrollToBottom = () => {
     if (messagesContainer.value) {
@@ -65,6 +68,7 @@ const submitForm = () => {
     const currentMessage = message.value;
     message.value = '';
 
+    // fetch(`${baseURL}/`, {
     fetch(`${import.meta.env.VITE_API_URL}/`, {
         method: "POST",
         credentials: 'include',
@@ -95,7 +99,9 @@ const submitForm = () => {
 const resetStore = () => {
     if (isLoading.value) return;  // 로딩 중이면 리셋 동작 방지
 
+    // fetch(`${baseURL}/reset`, {
     fetch(`${import.meta.env.VITE_API_URL}/reset`, {
+    // fetch('http://localhost:8000/reset', {
         method: "POST",
         credentials: 'include', // 클라이언트와 서버가 통신할때 쿠키와 같은 인증 정보 값을 공유하겠다는 설정
     })
