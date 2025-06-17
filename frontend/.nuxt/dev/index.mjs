@@ -646,7 +646,7 @@ const _inlineRuntimeConfig = {
     }
   },
   "public": {
-    "apiUrl": "/projects/chatbot/api"
+    "apiUrl": "http://localhost:8000/api"
   }
 };
 const envOptions = {

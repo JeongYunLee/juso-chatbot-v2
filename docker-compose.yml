@@ -38,9 +38,9 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     expose:
-      - "5000"
+      - "8000"
     ports:
-     - "5000:5000"
+     - "8000:8000"
     env_file:
       - ./backend/.env
     networks:

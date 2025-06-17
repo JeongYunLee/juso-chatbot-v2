@@ -1,3 +1,5 @@
+# 서버 코드 수정 (main.py)
+
 import uuid, os
 from dotenv import load_dotenv
 from typing import TypedDict
@@ -10,15 +12,13 @@ from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings
 
 from langchain_community.tools.tavily_search import TavilySearchResults
-# from langchain_teddynote.messages import random_uuid   # type: ignore
-## langsmith
 from langsmith import Client
 from langchain_teddynote import logging
 from langchain_core.tracers.context import collect_runs
 
-from langgraph.graph import END, StateGraph # type: ignore
-from langgraph.checkpoint.memory import MemorySaver # type: ignore
-from langgraph.errors import GraphRecursionError # type: ignore
+from langgraph.graph import END, StateGraph
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.errors import GraphRecursionError
 
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.output_parsers.openai_tools import JsonOutputToolsParser
@@ -52,41 +52,46 @@ class GraphState(TypedDict):
     context: list | str  # 문서의 검색 결과
     answer: str | list[str]   # llm이 생성한 답변
     relevance: str  # 답변의 문서에 대한 관련성 (groundness check)
-    # chat_history: str  # 채팅 히스토리
-    
+    session_id: str  # 세션 ID 추가
+
+# 전역 변수들
 store = {}
 
 # 세션 ID를 기반으로 세션 기록을 가져오는 함수
 def get_session_history(session_ids):
-    if session_ids not in store:  # 세션 ID가 store에 없는 경우
-        # 새로운 ChatMessageHistory 객체를 생성하여 store에 저장
+    if session_ids not in store:
         store[session_ids] = ChatMessageHistory()
-    return store[session_ids]  # 해당 세션 ID에 대한 세션 기록 반환
+        # print(f"🆕 새로운 세션 히스토리 생성: {session_ids[:8]}...")
+    else:
+        pass
+        # print(f"📚 기존 세션 히스토리 로드: {session_ids[:8]}... (메시지 수: {len(store[session_ids].messages)})")
+    return store[session_ids]
+
+# 새로운 세션 ID 생성 함수
+def generate_session_id():
+    return str(uuid.uuid4())
 
 #######################################################################
 ############################ nodes: Router ############################
 #######################################################################
 
-# 자료구조 정의 (pydantic)
 class Router(BaseModel):
     type: str = Field(description="type of the query that model choose")
 
-# 출력 파서 정의
 router_output_parser = JsonOutputParser(pydantic_object=Router)
 format_instructions = router_output_parser.get_format_instructions()
 
-# prompt 구성
 router_prompt = PromptTemplate(
     template="""
-            You are an expert who classifies the type of question. There are two query types: [‘general’, ‘domain_specific’]
+            You are an expert who classifies the type of question. There are two query types: ['general', 'domain_specific']
 
             [general]
-            Questions unrelated to addresses, such as translating English to Korean, asking for general knowledge (e.g., “What is the capital of South Korea?”), or queries that can be answered through a web search.
+            Questions unrelated to addresses, such as translating English to Korean, asking for general knowledge (e.g., "What is the capital of South Korea?"), or queries that can be answered through a web search.
 
             [domain_specific]
-            Questions related to addresses, such as concepts, definitions, address-related data analysis, or reviewing properly written addresses (e.g., “수지구는 자치구이니 일반구이니?”, “특별시에 대해서 설명해줘”, “주소와 주소정보의 차이점은?”).
+            Questions related to addresses, such as concepts, definitions, address-related data analysis, or reviewing properly written addresses (e.g., "수지구는 자치구이니 일반구이니?", "특별시에 대해서 설명해줘", "주소와 주소정보의 차이점은?").
 
-            <Output format>: Always respond with either “general” or “domain_specific” and nothing else. {format_instructions}
+            <Output format>: Always respond with either "general" or "domain_specific" and nothing else. {format_instructions}
             <chat_history>: {chat_history}
             
             <Question>: {query} 
@@ -100,12 +105,15 @@ def router(state: GraphState) -> GraphState:
     
     router_with_history  = RunnableWithMessageHistory(
         chain,
-        get_session_history,  # 세션 기록을 가져오는 함수
-        input_messages_key="query",  # 사용자의 질문이 템플릿 변수에 들어갈 key
-        history_messages_key="chat_history",  # 기록 메시지의 키
+        get_session_history,
+        input_messages_key="query",
+        history_messages_key="chat_history",
     )
     
-    router_result = router_with_history.invoke({"query": state["question"]}, {'configurable': {'session_id': 'tmp'}})
+    router_result = router_with_history.invoke(
+        {"query": state["question"]}, 
+        {'configurable': {'session_id': state["session_id"]}}
+    )
     state["q_type"] = router_result['type']
     return state
 
@@ -121,14 +129,9 @@ client = chromadb.PersistentClient('chroma/')
 embedding = OpenAIEmbeddings(model='text-embedding-3-large')  
 vectorstore = Chroma(client=client, collection_name="49_files_openai_3072", embedding_function=embedding)
 
-# def retrieve_document(state: GraphState) -> GraphState:
-#     retrieved_docs = vectorstore.similarity_search_with_score(state["question"], k=3)
-#     return {**state, "context": retrieved_docs} 
-
 def retrieve_document(state: GraphState) -> GraphState:
     retrieved_docs_with_score = vectorstore.similarity_search_with_score(state["question"], k=3)
 
-    # Document를 딕셔너리로 변환
     serialized_docs = [
         {
             "page_content": doc.page_content,
@@ -144,17 +147,15 @@ def retrieve_document(state: GraphState) -> GraphState:
 ############################ nodes: Verifier ############################
 #########################################################################
 
-# 자료구조 정의 (pydantic)
 class Verifier(BaseModel):
     type: str = Field(description="verify that retrieved data is sufficient to answer the query")
 
-# 출력 파서 정의
 verifier_output_parser = JsonOutputParser(pydantic_object=Verifier)
 format_instructions = verifier_output_parser.get_format_instructions()
 
 verifier_prompt = PromptTemplate(
     template="""
-            You are an expert who verity the retrieved data's quality and usefullness to answer the query. There are two query types: [‘sufficient’, ‘insufficient’, 'unsuitable']
+            You are an expert who verity the retrieved data's quality and usefullness to answer the query. There are two query types: ['sufficient', 'insufficient', 'unsuitable']
 
             [sufficient]
             When the retrieved data is sufficient to answer the query.
@@ -178,7 +179,10 @@ verifier_prompt = PromptTemplate(
 
 def verifier(state: GraphState) -> GraphState:
     chain = verifier_prompt | llm_4o | verifier_output_parser
-    verified = chain.invoke({"query": state["question"], "retrieved_data": state["context"]}, {'configurable': {'session_id': 'tmp'}})
+    verified = chain.invoke(
+        {"query": state["question"], "retrieved_data": state["context"]}, 
+        {'configurable': {'session_id': state["session_id"]}}
+    )
     state["relevance"] = verified['type']
     return state
 
@@ -190,24 +194,20 @@ def verifier_conditional_edge(state: GraphState) -> str:
 
     return verified_result
  
- ############################ tools ############################
+############################ tools ############################
 
 @tool
 def search_on_web(input):
     """ 실시간 정보, 최신 정보 등 웹 검색이 필요한 질문에 답변하기 위해 사용하는 도구 """
     search_tool = TavilySearchResults(max_results=5)
-    search_result = search_tool.invoke({"query": input}, {'configurable': {'session_id': 'tmp'}})
-
+    search_result = search_tool.invoke({"query": input})
     return search_result
 
 from langchain_community.utilities.dalle_image_generator import DallEAPIWrapper
 from langchain.tools import tool
 
-# DallE API Wrapper를 생성합니다.
 dalle = DallEAPIWrapper(model="dall-e-3", size="1024x1024", quality="standard", n=1)
 
-
-# DallE API Wrapper를 도구로 정의합니다.
 @tool
 def dalle_tool(query):
     """use this tool to generate image from text"""
@@ -232,33 +232,10 @@ def advanced_assistant(input, retrieved_data):
     result = response.choices[0].message.content
     return result
 
-    # llm_4_1 = ChatOpenAI(model="gpt-4.1")
-
-    # model_prompt = PromptTemplate(
-    #     template="""
-    #         You are an expert who answers the query based on the retrieved data.
-    #         When relevance is `sufficient`, you MUST INCLUDE the sources from the retrieved_data.
-    #         Follow these rules for citing sources:
-    #             1.	Only include a source if it was actually used in your answer and relevance is sufficient.
-    #             2.	The citation must be based on context/metadata/source in the retrieved data(3 context would be provided). DO NOT MAKE YOURSELF!
-    #             3.	Citation format:
-    #             •	If context/metadata/source is: data/final/[1018] 주소정보_업무편람_최종(하이퍼링크).docx
-    #             •	Then citation should be: 출처: 주소정보 업무편람 최종
-    #             •	Extract only the essential name (remove path, numbering, and file extensions/parentheses).
-    #         DON'T FORGET TO INCLUDE THE REFERENCE INFO AT THE BOTTOM OF THE ANSWER!
-    #         <Question>: {query}
-    #         <Retrieved data>: {retrieved_data}
-    #     """,
-    #     input_variables=["query", "retrieved_data", "chat_history"],
-    # )
-
-    # chain = model_prompt | llm_4_1 | StrOutputParser()
-    # return chain.invoke({"query": input, "retrieved_data": retrieved_data})
-
 @tool
 def image_explainer(query, image_url):
     """ 이미지 설명 생성기. Use after the image_generator tool make the image output. Use the url of the image_generator tool. """
-    client = OpenAI()  # Client 객체 생성
+    client = OpenAI()
 
     response = client.chat.completions.create(
         model="gpt-4o",
@@ -280,7 +257,6 @@ def image_explainer(query, image_url):
     )
     return response.choices[0]
     
-
 tools = [search_on_web, dalle_tool, advanced_assistant, image_explainer]
 
 agent_prompt = ChatPromptTemplate.from_messages(
@@ -295,27 +271,6 @@ agent_prompt = ChatPromptTemplate.from_messages(
             "If you use search tool, you can add href link. "
             "You can use image generation tool to generate image from text. "
             "You can use advanced_assistant to write long report or reasoning tasks."
-
-            # """
-            # When using `Retrieved Data` and the topic is address-related, follow these rules for citing sources:
-            #     1.	Only include a source if it was actually used in your answer and relevance is sufficient.
-            #     2.	The citation must be based on context/metadata/source in the retrieved data. Among the three provided context sources, cite only those directly used in your answer.
-            #     3.	Citation format:
-            #     •	If context/metadata/source is: data/final/********.docx
-            #     •	Then citation should be: 출처: **********
-            #     •	Extract only the essential name (remove path, numbering, and file extensions/parentheses).
-            #     (IMPORTANT) DO NOT MAKE UP SOURCES. Only use the sources provided in the retrieved_data.
-            # Additional rules:
-            # 1.	You can appropriately select and use various tools based on the situation.
-            #     (Note) When the user asks for current information, consider "June 2025" as the reference point for up-to-date data.
-            # 2.	If the relevance is "insufficient," use the retrieved_data along with the search_on_web tool.
-            # 3.	If you use the advanced_assistant tool, make sure to reflect both the content and the full extent of the response in your final answer.
-            # 4.	If you use the image_generator tool, you must also use the image_explainer tool to provide a description of the generated image.
-            # 5.	(IMPORTANT) The user may have multiple requests, and you must generate a response that addresses all of them.
-            #     - If multiple tools are required to fulfill different aspects of the user's request, combine the results comprehensively into a single, final response.
-            #     - If an image is generated, you must include both the image URL and a detailed explanation of the image.
-            #     - Ensure that all tool outputs are fully incorporated into the final answer.
-            # """
         ),
         ("placeholder", "{chat_history}"),
         ("human", "{input}"),
@@ -325,7 +280,6 @@ agent_prompt = ChatPromptTemplate.from_messages(
 )
 
 def agent(state: GraphState) -> GraphState:
-    
     llm = ChatOpenAI(model="gpt-4.1")
     agent = create_tool_calling_agent(llm, tools, agent_prompt)
     
@@ -338,19 +292,17 @@ def agent(state: GraphState) -> GraphState:
         handle_parsing_errors=True,
         return_intermediate_steps=True
     )
-    
-    # tool_input = {"input": state["question"], "retrieved_data": state["context"], "relevance": state["relevance"]}
-
 
     agent_with_history = RunnableWithMessageHistory(
         agent_executor,
-        get_session_history,  # 세션 기록을 가져오는 함수
-        # input_messages_key="input",  # 사용자의 질문이 템플릿 변수에 들어갈 key
-        history_messages_key="chat_history",  # 기록 메시지의 키
+        get_session_history,
+        history_messages_key="chat_history",
     )
 
-
-    result = agent_with_history.invoke({"input": state["question"], "retrieved_data": state["context"], "relevance": state["relevance"]}, {'configurable': {'session_id': 'tmp'}})
+    result = agent_with_history.invoke(
+        {"input": state["question"], "retrieved_data": state["context"], "relevance": state["relevance"]}, 
+        {'configurable': {'session_id': state["session_id"]}}
+    )
     state['answer'] = result['output']
 
     return state
@@ -361,180 +313,29 @@ def agent(state: GraphState) -> GraphState:
 
 workflow = StateGraph(GraphState)
 
-# 노드들을 정의합니다.
-workflow.add_node("Router", router)  # 질문의 종류를 분류하는 노드를 추가합니다.
-workflow.add_node("Retrieved Data", retrieve_document)  # 답변을 검색해오는 노드를 추가합니다.
-workflow.add_node("Agent", agent)  # 일반 질문에 대한 답변을 생성하는 노드를 추가합니다.
-workflow.add_node("Verifier", verifier)  # 답변의 문서에 대한 관련성 체크 노드를 추가합니다.
-# workflow.add_node("llm_answer", llm_model)  # 답변을 생성하는 노드를 추가합니다.
+workflow.add_node("Router", router)
+workflow.add_node("Retrieved Data", retrieve_document)
+workflow.add_node("Agent", agent)
+workflow.add_node("Verifier", verifier)
 
-# 조건부 엣지를 추가합니다.
 workflow.add_conditional_edges(
-    "Router",  # 질문의 종류를 분류하는 노드에서 나온 결과를 기반으로 다음 노드를 선택합니다.
+    "Router",
     router_conditional_edge,
     {"domain_specific": "Retrieved Data",  "general": "Agent"},
 )
 
-workflow.add_edge("Retrieved Data", "Verifier")  # 검색 -> 답변
-workflow.add_edge("Verifier", "Agent")  # 답변 -> 답변
+workflow.add_edge("Retrieved Data", "Verifier")
+workflow.add_edge("Verifier", "Agent")
+workflow.add_edge("Agent", END)
 
-workflow.add_edge("Agent", END)  # 답변 -> 종료
-
-# 시작점을 설정합니다.
 workflow.set_entry_point("Router")
 
-# 기록을 위한 메모리 저장소를 설정합니다.
 memory = MemorySaver()
-
-# 그래프를 컴파일합니다.
 graph = workflow.compile(checkpointer=memory)    
 
 ##############################################################################################################
 ################################################Chat Interface################################################
 ##############################################################################################################
-
-# from fastapi import FastAPI, Request, Form, HTTPException
-# from fastapi.middleware.cors import CORSMiddleware
-# from fastapi.responses import JSONResponse
-# from pydantic import BaseModel
-
-# app = FastAPI(title="Juso Chatbot API")
-
-# from pydantic_settings import BaseSettings
-# from functools import lru_cache
-# import os
-# from dotenv import load_dotenv
-
-# load_dotenv()
-
-# class Settings(BaseSettings):
-#     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-#     ALLOWED_ORIGINS: list = [
-#         "http://localhost:3000",
-#         "http://localhost:3001",
-#         "https://localhost:3000",
-#         "https://localhost:3001",
-#         "http://labs.datahub.kr",
-#         "https://labs.datahub.kr",
-#         "http://localhost:8000",
-#         "https://localhost:8000",
-
-#     ]
-
-# @lru_cache()
-# def get_settings():
-#     return Settings() 
-
-# settings = get_settings()
-
-# # CORS 설정
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=settings.ALLOWED_ORIGINS,
-#     allow_credentials=True,
-#     allow_methods=["*"],
-#     allow_headers=["*"],
-# )
-
-# class MessageRequest(BaseModel):
-#     message: str
-
-# class FeedbackRequest(BaseModel):
-#     score: float
-#     run_id: str
-
-# current_user_id = None
-
-# # @app.post("/set_user_id")
-# # async def set_user_id(request: Request):
-# #     global current_user_id
-# #     data = await request.json()
-# #     current_user_id = data.get('id')
-# #     return {"status": "ID received successfully"}
-
-# @app.post("/")
-# async def stream_responses(request: Request):
-#     try:
-#         data = await request.json()
-#         message = data.get('message')
-        
-#         if not message:
-#             raise HTTPException(status_code=400, detail="Message is required")
-
-#         config = RunnableConfig(
-#             recursion_limit=15, 
-#             configurable={
-#                 "thread_id": "HIKE-JUSOCHATBOT-DEMO", 
-#                 "user_id": current_user_id, 
-#                 "session_id": "session1"
-#             }
-#         )
-
-#         inputs = GraphState(
-#             question=message,
-#         )
-
-#         try:
-#             final_state = graph.invoke(inputs, stream_mode="values", config=config)
-#             answer_text = final_state["answer"]
-#             print(answer_text)
-#             return {"answer": answer_text}
-            
-#         except GraphRecursionError as e:
-#             print(f"Recursion limit reached: {e}")
-#             return {"answer": "죄송합니다. 해당 질문에 대해서는 답변할 수 없습니다."}
-#         except Exception as e:
-#             print(f"An error occurred: {e}")
-#             return {"answer": "죄송합니다. 처리 중 오류가 발생했습니다."}
-
-#     except Exception as e:
-#         raise HTTPException(status_code=400, detail=str(e))
-
-# # @app.post("/feedback")
-# # async def handle_feedback(feedback: FeedbackRequest):
-# #     try:
-# #         langsmith_client.create_feedback(
-# #             feedback.run_id,
-# #             key="feedback-key",
-# #             score=feedback.score,
-# #             comment="comment",
-# #         )
-# #         return {"message": "Feedback received"}
-# #     except Exception as e:
-# #         print(f"An error occurred while handling feedback: {e}")
-# #         raise HTTPException(status_code=500, detail="An error occurred while processing feedback")
-
-# @app.post("/reset")
-# async def reset_store():
-#     global store, current_user_id
-#     store = {}
-    
-#     global initial_state
-#     initial_state = GraphState(
-#         question='',
-#         q_type='',
-#         context='',
-#         answer='',
-#         relevance='',
-#     )
-    
-#     return {"status": "Store and GraphState reset successfully"}
-
-# # if __name__ == '__main__':
-# #     app.run('0.0.0.0', port=5000, debug=True)
-
-
-# if __name__ == "__main__":
-#     import uvicorn
-#     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-
-
-##############################################################################################################
-################################################Chat Interface################################################
-##############################################################################################################
-
-# app = Flask(__name__)
-# app.secret_key = os.getenv('FLASK_SECRET_KEY')
 
 from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -554,7 +355,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
     ALLOWED_ORIGINS: list = [
         "http://localhost:3000",
-        "http://localhost:3001",
+        "http://localhost:3001", 
         "https://localhost:3000",
         "https://localhost:3001",
         "http://labs.datahub.kr",
@@ -569,7 +370,6 @@ def get_settings():
 
 settings = get_settings()
 
-# CORS 설정
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
@@ -580,6 +380,7 @@ app.add_middleware(
 
 class MessageRequest(BaseModel):
     message: str
+    session_id: str = None
 
 class FeedbackRequest(BaseModel):
     score: float
@@ -587,85 +388,125 @@ class FeedbackRequest(BaseModel):
 
 current_user_id = None
 
-# @app.post("/set_user_id")
-# async def set_user_id(request: Request):
-#     global current_user_id
-#     data = await request.json()
-#     current_user_id = data.get('id')
-#     return {"status": "ID received successfully"}
+# 기존 코드에서 수정이 필요한 부분만
 
 @app.post("/api/")
 async def stream_responses(request: Request):
     try:
         data = await request.json()
         message = data.get('message')
+        client_session_id = data.get('session_id')
         
         if not message:
             raise HTTPException(status_code=400, detail="Message is required")
+
+        # 🔧 핵심 수정: session_id가 없을 때만 새로 생성
+        if not client_session_id:
+            client_session_id = generate_session_id()
+        else:
+            pass
 
         config = RunnableConfig(
             recursion_limit=15, 
             configurable={
                 "thread_id": "HIKE-JUSOCHATBOT-DEMO", 
                 "user_id": current_user_id, 
-                "session_id": "session1"
+                "session_id": client_session_id
             }
         )
 
         inputs = GraphState(
             question=message,
+            session_id=client_session_id,
+            q_type='',
+            context='',
+            answer='',
+            relevance='',
         )
 
         try:
             final_state = graph.invoke(inputs, stream_mode="values", config=config)
             answer_text = final_state["answer"]
-            print(answer_text)
-            return {"answer": answer_text}
+            
+            # 응답에 현재 세션의 메시지 수 포함 (디버깅용)
+            current_history = get_session_history(client_session_id)
+            message_count = len(current_history.messages)
+            
+            print(f"💬 세션 {client_session_id[:8]}... 응답 완료 (총 {message_count}개 메시지)")
+            
+            return {
+                "answer": answer_text,
+                "session_id": client_session_id,  # 클라이언트가 다음에 사용할 수 있도록 반환
+                "message_count": message_count
+            }
             
         except GraphRecursionError as e:
             print(f"Recursion limit reached: {e}")
-            return {"answer": "죄송합니다. 해당 질문에 대해서는 답변할 수 없습니다."}
+            return {
+                "answer": "죄송합니다. 해당 질문에 대해서는 답변할 수 없습니다.",
+                "session_id": client_session_id
+            }
         except Exception as e:
             print(f"An error occurred: {e}")
-            return {"answer": "죄송합니다. 처리 중 오류가 발생했습니다."}
+            return {
+                "answer": "죄송합니다. 처리 중 오류가 발생했습니다.",
+                "session_id": client_session_id
+            }
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-# @app.post("/feedback")
-# async def handle_feedback(feedback: FeedbackRequest):
-#     try:
-#         langsmith_client.create_feedback(
-#             feedback.run_id,
-#             key="feedback-key",
-#             score=feedback.score,
-#             comment="comment",
-#         )
-#         return {"message": "Feedback received"}
-#     except Exception as e:
-#         print(f"An error occurred while handling feedback: {e}")
-#         raise HTTPException(status_code=500, detail="An error occurred while processing feedback")
-
 @app.post("/api/reset")
-async def reset_store():
+async def reset_store(request: Request):
     global store, current_user_id
-    store = {}
     
-    global initial_state
-    initial_state = GraphState(
-        question='',
-        q_type='',
-        context='',
-        answer='',
-        relevance='',
-    )
-    
-    return {"status": "Store and GraphState reset successfully"}
-
-# if __name__ == '__main__':
-#     app.run('0.0.0.0', port=5000, debug=True)
-
+    try:
+        data = await request.json()
+        session_id_to_reset = data.get('session_id')
+        
+        if session_id_to_reset:
+            # 특정 세션만 초기화
+            if session_id_to_reset in store:
+                message_count = len(store[session_id_to_reset].messages)
+                del store[session_id_to_reset]
+                print(f"🗑️ 세션 삭제: {session_id_to_reset[:8]}... ({message_count}개 메시지)")
+            
+            # 새로운 세션 ID 생성하여 반환
+            new_session_id = generate_session_id()
+            print(f"🆕 새 세션 생성: {new_session_id[:8]}...")
+            
+            return {
+                "status": "Session reset successfully",
+                "session_id": new_session_id,  # 새 세션 ID 반환
+                "cleared_messages": message_count if session_id_to_reset in locals() else 0
+            }
+        else:
+            # 모든 세션 초기화
+            total_sessions = len(store)
+            total_messages = sum(len(history.messages) for history in store.values())
+            store = {}
+            
+            # 새로운 세션 ID 생성하여 반환
+            new_session_id = generate_session_id()
+            print(f"🧹 전체 초기화: {total_sessions}개 세션, {total_messages}개 메시지 삭제")
+            
+            return {
+                "status": "All sessions reset successfully",
+                "session_id": new_session_id,  # 새 세션 ID 반환
+                "cleared_sessions": total_sessions,
+                "cleared_messages": total_messages
+            }
+            
+    except Exception as e:
+        # 오류 발생시에도 새 세션 ID 반환
+        store = {}
+        new_session_id = generate_session_id()
+        
+        return {
+            "status": "Sessions reset due to error",
+            "session_id": new_session_id
+        }
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=5000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
