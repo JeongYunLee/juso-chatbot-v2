@@ -10,6 +10,8 @@ backend/__pycache__
 backend/.chainlit/*
 backend/chainlit.md
 frontend/.DS_Store
-frontend/.nuxt/*
+frontend/.nuxt
+frontend/node_modules
+frontend/.output
 .DS_Store
 chroma.zip

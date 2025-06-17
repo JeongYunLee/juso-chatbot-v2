@@ -7,11 +7,11 @@ export default defineNuxtConfig({
   ],
   css: ["prismjs/themes/prism.css"],
   app: {
-    baseURL: '/chatbot/',
+    baseURL: '/projects/chatbot/',
   },
   runtimeConfig: {
     public: {
-      apiUrl: process.env.VITE_API_URL || 'http://localhost:8000'
+      apiUrl: process.env.VITE_API_URL 
     }
   }
 });
