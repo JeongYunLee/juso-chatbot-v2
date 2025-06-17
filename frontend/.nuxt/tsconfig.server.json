@@ -78,33 +78,6 @@
       ],
       "vite/client": [
         "../node_modules/vite/client"
-      ],
-      "#shared": [
-        "../shared"
-      ],
-      "assets": [
-        "../assets"
-      ],
-      "assets/*": [
-        "../assets/*"
-      ],
-      "public": [
-        "../public"
-      ],
-      "public/*": [
-        "../public/*"
-      ],
-      "#build": [
-        "./"
-      ],
-      "#build/*": [
-        "./*"
-      ],
-      "#internal/nuxt/paths": [
-        "../node_modules/nuxt/dist/core/runtime/nitro/utils/paths"
-      ],
-      "#unhead/composables": [
-        "../node_modules/nuxt/dist/head/runtime/composables/v3"
       ]
     },
     "lib": [
