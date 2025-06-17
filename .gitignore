@@ -15,3 +15,7 @@ frontend/node_modules
 frontend/.output
 .DS_Store
 chroma.zip
+
+backend/main_chainlit.py
+backend/main_agents.py
+backend/testcode/*
