@@ -319,7 +319,7 @@ def advanced_assistant(input, retrieved_data):
         
         response = call_openai_with_retry(
             client,
-            model="gpt-4o",  # o3 대신 더 안정적인 gpt-4o 사용
+            model="o3",  
             messages=[
                 { "role": "developer", "content": "You are a helpful assistant." },
                 {
@@ -391,7 +391,7 @@ agent_prompt = ChatPromptTemplate.from_messages(
 
 def agent(state: GraphState) -> GraphState:
     try:
-        llm = ChatOpenAI(model="gpt-4o", temperature=0, timeout=60)  # 타임아웃 설정
+        llm = ChatOpenAI(model="gpt-4.1", temperature=0, timeout=60)  # 타임아웃 설정
         agent = create_tool_calling_agent(llm, tools, agent_prompt)
         
         agent_executor = AgentExecutor(
